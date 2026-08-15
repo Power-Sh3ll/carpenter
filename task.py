@@ -14,7 +14,7 @@ def time_dec(function):
             raise TimeoutError("Function execution exceeded 20 seconds")
         return result
     return wrapper
-3
+
 phrases = ["hi", "hello", "hey", "greetings", "salutations", "howdy", "yo", "sup", "what's up", "good day"]
 
 @time_dec

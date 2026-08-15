@@ -129,7 +129,7 @@ class registry:
 
 
 if __name__ == "__main__":
-    from job import job
+    from carpenter.job import job
 
     # Example usage
     settings = {
