@@ -513,7 +513,7 @@ class Registry:
                     return job
         return None
 
-    def print_registry(self, clear=False):
+    def print_registry(self, clear=False, max_print_jobs=20):
         """
         Pretty print a snapshot of the registry's current jobs.
 
@@ -522,6 +522,9 @@ class Registry:
         stdout is not a terminal, to keep escape codes out of piped output and
         log files.
 
+        caps at 20 jobs, but the full registry is still available via get_job() and to_dict(). This can also be overriden by using the max_print_jobs param. After max is met only running jobs will be printed. This is to avoid flooding the screen with finished jobs.
+
+        Color Codes:
         Green: Done
         Red: Failed/Terminated
         Yellow: Paused
@@ -537,11 +540,12 @@ class Registry:
         # keep_jobs is False, which would otherwise change the dict mid-iteration.
         with self._lock:
             rows = list(self._registry.values())
-
+            if len(rows) > max_print_jobs:
+                rows = [job for job in rows if job.is_active()] + rows[:max_print_jobs]
         print(rule)
         print(header)
         print(rule)
-        for job in rows:
+        for job in rows[:max_print_jobs]:
             exit_code = "-" if job.exit_code is None else job.exit_code
             runtime = "-" if job.duration() is None else f"{job.duration():.1f}s"
             if job.status == "finished":

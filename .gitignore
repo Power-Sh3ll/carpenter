@@ -220,3 +220,6 @@ __marimo__/
 # AI
 .claude/
 .copilot/
+
+# TODO list:
+TODO.md
