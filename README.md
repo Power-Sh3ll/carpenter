@@ -108,6 +108,57 @@ Leaving the `with` block applies the shutdown policy rather than overriding it: 
 
 `python feeder_test.py` runs a fuller version of this. It drips new jobs into a live registry from a background thread to show that late arrivals reset the idle countdown, and redraws the table in place while it waits.
 
+## Job names
+
+A job name must be a non-empty, lowercase, valid Python identifier under 256 characters. In practice: letters, digits and underscores, not starting with a digit, no capitals.
+
+| Name | Result |
+| --- | --- |
+| `job_0` | Fine |
+| `Job_0` | `ValueError`, capital letter |
+| `Job #0` | `ValueError`, space and `#` are not identifier characters |
+| `job-0` | `ValueError`, hyphen is not an identifier character |
+| `0_job` | `ValueError`, cannot start with a digit |
+
+The usual way to trip over this is an f-string written for display rather than for lookup:
+
+```python
+job = Job(f"Job #{i}")   # ValueError
+job = Job(f"job_{i}")    # fine
+```
+
+The name is not only a label. `get_job(name=...)` looks jobs up by it, and under `output_mode="file"` it becomes part of the log filename, so keeping it identifier shaped keeps both of those predictable.
+
+## Driving the loop yourself
+
+`wait_for_jobs()` blocks until everything has drained, which is all a one-shot script needs. When you want to watch progress as it happens, or do your own work between sweeps, you write the loop instead. This is the shape, from [flood_test.py](flood_test.py):
+
+```python
+with Registry(registry_settings, blueprint) as reg:
+    for x in range(100):
+        job = Job(f"job_{x}")
+        reg.register_job(job)
+        reg.start_job(job)
+
+    while not reg.is_shutdown:
+        reg.poll_jobs()
+        active = reg.active_jobs()
+        reg.print_registry(clear=True)
+        if not active and reg.terminate_behavior == "manual":
+            break
+        time.sleep(max(1.0, reg.poll_interval))
+```
+
+Four things in there are worth spelling out, because none of them are guessable.
+
+**`while not reg.is_shutdown` only ends on its own under `on_idle`.** `should_terminate()` returns `False` immediately for a `manual` registry, so the monitor never brings it down and the condition stays true forever. That is what the explicit `break` is for: under `manual`, a drained registry is the loop's own stopping point, because nothing else is ever going to say so.
+
+**Your `poll_jobs()` call is not what reaps the jobs.** The monitor thread is already sweeping every `poll_interval`, started for you by the first `start_job()`. Calling it here means the table you are about to print reflects this instant rather than whatever the last background sweep saw. It also returns the jobs that finished on this sweep, which is the hook to use if you want to react to completions instead of only displaying them.
+
+**`print_registry(clear=True)` homes the cursor before drawing**, so the table redraws in place instead of scrolling. Anything printed earlier in the loop is wiped by the redraw. The clear is skipped when stdout is not a TTY, so piping to a file gives you the tables one after another rather than a screen-clear before each. Note that the per-row status colors are written either way, so piped output still contains color escapes.
+
+**Sleep at least `poll_interval`.** Nothing in the registry can change faster than the monitor polls, so a tighter loop reprints the same table and burns CPU for nothing.
+
 ## Settings
 
 Everything is a key in the dict passed to `Registry(settings)`. All are optional; all are validated on construction, so a bad setting raises `ValueError` immediately rather than mid run.
@@ -158,7 +209,7 @@ stateDiagram-v2
 
 **Nothing moves a job out of `started` on its own.**
 
-`poll_jobs()` is the method that observes an exit and records the exit code, end time, and final status. The background monitor calls it every `poll_interval`, and `wait_for_jobs()` calls it while it blocks, but if you write your own loop you have to call it yourself.
+`poll_jobs()` is the method that observes an exit and records the exit code, end time, and final status. The background monitor calls it every `poll_interval`, and `wait_for_jobs()` calls it while it blocks. In a hand-written loop, call it yourself to read state fresher than the last background sweep. See [Driving the loop yourself](#driving-the-loop-yourself).
 
 A `Job` object can be re-run: `start_job()` clears the previous run's result before spawning again. This is useful if you have a job that only kicks off the same code with the same params.
 
@@ -244,7 +295,7 @@ The registry is built to be driven from more than one thread. Such as a web serv
 
 - `max_cpus` and `max_memory` are validated against the host at construction but are **not enforced** at run time. There is no scheduling queue: `start_job()` spawns immediately, however many jobs are already running.
 - No test suite.
-- Not packaged: there is no `pyproject.toml`, so no `pip install`.
+- Not on PyPI. It is pip installable from GitHub or a local clone, but the distribution name is not settled yet. See [Install](#install).
 - Exposing log file naming to the user in `file` mode, so they can choose a directory and filename pattern rather than the current `<name>.<id>.<stream>.log`.
 - a job weight/priority system, so a registry can decide which jobs to start when it is at its resource limit. This will be a queue of jobs waiting to start, and the monitor will only spawn as many as the limits allow.
 - max job count, max job age, and max job runtime, so the registry can automatically drop old or long-running jobs. This will be a per-job setting, with a default in the registry settings.
