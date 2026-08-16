@@ -59,9 +59,9 @@ python feeder_test.py   # jobs arriving over time against a live registry
 python flood_test.py    # many jobs registered up front
 ```
 
-## The three pieces
+## The 3 Classes
 
-| Piece | What it is |
+| Class | Purpose |
 | --- | --- |
 | `Blueprint` | A reusable process template: command, working directory, environment. Every `spawn()` launches a fresh, independent process, so one blueprint can back any number of jobs. |
 | `Job` | One run of a blueprint. Carries its own name, status, timings, exit code, and captured output. Registered with a registry, then started by it. |
