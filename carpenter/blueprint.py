@@ -19,17 +19,22 @@ class Blueprint:
         self.cwd = cwd
         self.env = env
 
-    def spawn(self) -> subprocess.Popen:
+    def spawn(self, stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.PIPE) -> subprocess.Popen:
         """
         Launch a new, independent subprocess based on this blueprint. Safe to
         call multiple times; each call returns its own Popen instance.
+
+        The registry passes the stream targets that match its output_mode: a
+        pipe it drains, an open log file, or DEVNULL. A pipe that nobody reads
+        will stall the child once the OS buffer fills, so callers spawning
+        directly are responsible for consuming whatever they pipe.
         """
         return subprocess.Popen(
             self.command,
             cwd=self.cwd,
             env=self.env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            stdin=subprocess.PIPE,
+            stdout=stdout,
+            stderr=stderr,
+            stdin=stdin,
             text=True,
         )
