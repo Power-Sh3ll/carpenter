@@ -23,12 +23,46 @@ Carpenter uses only the Python standard library. It does not require a broker, a
 
 ## Install
 
-There is no package on PyPI yet. Clone it and use the `carpenter` package directly:
+Carpenter is not on PyPI yet, but it is a normal pip installable package. Install it into any venv straight from GitHub:
+
+```bash
+pip install git+https://github.com/Power-Sh3ll/carpenter.git
+```
+
+Or from a clone on disk, using `-e` if you want your edits in the clone to show up live in the project that depends on it:
+
+```bash
+pip install /path/to/carpenter
+pip install -e /path/to/carpenter
+```
+
+Once a release is tagged, you can pin to it:
+
+```bash
+pip install git+https://github.com/Power-Sh3ll/carpenter.git@v0.1.0
+```
+
+Either way, the import is the same:
+
+```python
+from carpenter import Blueprint, Job, Registry
+```
+
+To build a wheel you can hand to someone else:
+
+```bash
+pip install build
+python -m build
+pip install dist/carpenter-0.1.0-py3-none-any.whl
+```
+
+To try the bundled demos without installing anything, clone the repo and run them from its root:
 
 ```bash
 git clone https://github.com/Power-Sh3ll/carpenter.git
 cd carpenter
-python main.py     # runs the bundled demo
+python feeder_test.py   # jobs arriving over time against a live registry
+python flood_test.py    # many jobs registered up front
 ```
 
 ## The three pieces
@@ -78,7 +112,7 @@ a723d7f4-8dc9-44cf-bbc9-4437b9e26ac2 job_0                failed     22.0s      
 
 Leaving the `with` block applies the shutdown policy rather than overriding it: under `on_idle` it waits out the registry's own idle window, under `manual` it drains the jobs and comes down. An exception skips both and tears everything down immediately.
 
-`python main.py` runs a fuller version of this. It drips new jobs into a live registry from a background thread to show that late arrivals reset the idle countdown, and redraws the table in place while it waits.
+`python feeder_test.py` runs a fuller version of this. It drips new jobs into a live registry from a background thread to show that late arrivals reset the idle countdown, and redraws the table in place while it waits.
 
 ## Settings
 
