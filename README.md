@@ -36,19 +36,13 @@ pip install /path/to/carpenter
 pip install -e /path/to/carpenter
 ```
 
-Once a release is tagged, you can pin to it:
-
-```bash
-pip install git+https://github.com/Power-Sh3ll/carpenter.git@v0.1.0
-```
-
 Either way, the import is the same:
 
 ```python
 from carpenter import Blueprint, Job, Registry
 ```
 
-To build a wheel you can hand to someone else:
+To build a wheel:
 
 ```bash
 pip install build
