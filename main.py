@@ -20,7 +20,7 @@ blueprint = Blueprint(["python", "-u", "task.py"])  # -u added here
 # into a live registry: the feeder runs on its own thread, so it goes through the
 # same locking a real handler would, and a job arriving during the idle window
 # resets the countdown instead of letting the registry shut down.
-ARRIVALS = [(5, "late_job_0"), (15, "late_job_1"), (30, "late_job_2")]
+ARRIVALS = [(5, "late_job_0"), (15, "late_job_1"), (30, "late_job_2"), (60, "super_late_job_3")]
 
 
 def feed_jobs(reg, arrivals):

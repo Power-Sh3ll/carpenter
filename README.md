@@ -1,6 +1,16 @@
 # carpenter
 
-A Python job registry. Think of it as an ant hill: need something done, send an ant!
+A Python job registry built on top of threading and subprocesses.
+
+Think of it as an ant hill: need something done, send an ant!
+
+```
+ \ \
+  \ \
+   (o)=(#)=(___)
+       /|\
+      / | \
+```
 
 Carpenter supervises external processes. You describe a command once as a **Blueprint**, wrap each run of it in a **Job**, and hand those jobs to a **Registry** that starts them, reaps them, collects their output, and decides when there is nothing left to supervise.
 

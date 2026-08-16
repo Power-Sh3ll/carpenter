@@ -521,6 +521,11 @@ class Registry:
         loop redraws the table in place instead of scrolling. It is ignored when
         stdout is not a terminal, to keep escape codes out of piped output and
         log files.
+
+        Green: Done
+        Red: Failed/Terminated
+        Yellow: Paused
+        Gray: working (started/stopped)
         """
         if clear and sys.stdout.isatty():
             print("\033[H\033[J", end="")
@@ -539,9 +544,19 @@ class Registry:
         for job in rows:
             exit_code = "-" if job.exit_code is None else job.exit_code
             runtime = "-" if job.duration() is None else f"{job.duration():.1f}s"
+            if job.status == "finished":
+                color = "\033[32m"  # Green
+            elif job.status in ("failed", "terminated"):
+                color = "\033[31m"  # Red
+            elif job.status == "paused":
+                color = "\033[33m"  # Yellow
+            else:
+                color = "\033[90m"  # Gray
+            reset = "\033[0m"
+            print(f"{color}", end="")
             # !s stringifies the UUID first; UUID has no __format__ of its own,
             # so a width spec applied directly to it raises TypeError.
-            print(f"{job.id!s:<36} {job.name:<20} {job.status:<10} {runtime:<10} {exit_code!s:<10}")
+            print(f"{job.id!s:<36} {job.name:<20} {job.status:<10} {runtime:<10} {exit_code!s:<10}{reset}")
         print(rule)
 
         active = sum(1 for job in rows if job.is_active())
