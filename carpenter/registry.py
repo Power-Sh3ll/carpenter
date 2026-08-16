@@ -3,6 +3,7 @@ import platform
 import shutil
 import signal
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -98,7 +99,9 @@ class Registry:
         self._monitor = None
         self._stop_monitor = threading.Event()
         self._shutdown = False
+        self._shutdown_event = threading.Event()
         self._last_busy = time.monotonic()
+        self._created_at = time.monotonic()
 
     def get_system_resources(self):
         """
@@ -335,6 +338,10 @@ class Registry:
         with self._lock:
             return [job for job in self._registry.values() if job.is_active()]
 
+    def uptime(self):
+        """Seconds since the registry was created, running or not."""
+        return time.monotonic() - self._created_at
+
     def idle_seconds(self):
         """
         How long the registry has had no outstanding work. Zero while any job is
@@ -452,6 +459,22 @@ class Registry:
         if self.on_shutdown is not None:
             self.on_shutdown(self, reason)
 
+        self._shutdown_event.set()
+
+    def wait_for_shutdown(self, timeout=None):
+        """
+        Block until the registry has shut down, whether that was the monitor
+        reaching its idle window or someone calling shutdown(). Returns True if
+        it shut down, False if the timeout expired first.
+
+        Under "manual" nothing will ever release this on its own, so only wait
+        on it unbounded when the behaviour is "on_idle".
+        """
+        # The monitor is what applies terminate_behavior, so make sure it is
+        # running: a registry that was never given a job has not started it yet.
+        self.start_monitor()
+        return self._shutdown_event.wait(timeout)
+
     @property
     def is_shutdown(self):
         return self._shutdown
@@ -463,11 +486,18 @@ class Registry:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        # Scoping jobs to a block means the block owns them, so a clean exit
-        # lets them finish. An exception tears things down immediately instead
-        # of hanging on work whose caller has already given up.
+        # A clean exit honours terminate_behavior rather than overriding it.
+        # Under "on_idle" the registry is the one that decides when it is
+        # finished, so leaving the block waits out its idle window instead of
+        # cutting it short; under "manual" the caller decides, and leaving the
+        # block is that decision, so the jobs are drained and it comes down.
+        # An exception skips both and tears everything down immediately rather
+        # than hanging on work whose caller has already given up.
         if exc_type is None:
-            self.wait_for_jobs()
+            if self.terminate_behavior == "on_idle":
+                self.wait_for_shutdown()
+            else:
+                self.wait_for_jobs()
         self.shutdown(reason="context-exit")
         return False
 
@@ -483,16 +513,50 @@ class Registry:
                     return job
         return None
 
-    def print_registry(self):
+    def print_registry(self, clear=False):
         """
         Pretty print a snapshot of the registry's current jobs.
-        """
-        header = f"{'Job ID':<36} {'Name':<20} {'Status':<10} {'Exit Code':<10}"
-        print(header)
-        print("-" * len(header))
 
-        for job_id, job in self._registry.items():
+        clear=True homes the cursor and wipes the screen first, so a polling
+        loop redraws the table in place instead of scrolling. It is ignored when
+        stdout is not a terminal, to keep escape codes out of piped output and
+        log files.
+        """
+        if clear and sys.stdout.isatty():
+            print("\033[H\033[J", end="")
+
+        header = f"{'Job ID':<36} {'Name':<20} {'Status':<10} {'Runtime':<10} {'Exit Code':<10}"
+        rule = "-" * len(header)
+
+        # Snapshot under the lock: the monitor thread removes finished jobs when
+        # keep_jobs is False, which would otherwise change the dict mid-iteration.
+        with self._lock:
+            rows = list(self._registry.values())
+
+        print(rule)
+        print(header)
+        print(rule)
+        for job in rows:
             exit_code = "-" if job.exit_code is None else job.exit_code
+            runtime = "-" if job.duration() is None else f"{job.duration():.1f}s"
             # !s stringifies the UUID first; UUID has no __format__ of its own,
             # so a width spec applied directly to it raises TypeError.
-            print(f"{job_id!s:<36} {job.name:<20} {job.status:<10} {exit_code:<10}")
+            print(f"{job.id!s:<36} {job.name:<20} {job.status:<10} {runtime:<10} {exit_code!s:<10}")
+        print(rule)
+
+        active = sum(1 for job in rows if job.is_active())
+        summary = [
+            f"{len(rows)} job{'' if len(rows) == 1 else 's'}",
+            f"{active} active",
+            f"runtime {self.uptime():.1f}s",
+        ]
+        if self.terminate_behavior == "on_idle":
+            # The idle clock only advances while nothing is running, so it reads
+            # as a countdown towards idle_time once the last job has finished.
+            summary.append(f"idle {self.idle_seconds():.1f}s / {self.idle_time:g}s")
+        else:
+            summary.append("shutdown: manual")
+        if self.is_shutdown:
+            summary.append("SHUT DOWN")
+        print(" | ".join(summary))
+        print(rule)
