@@ -169,7 +169,7 @@ Everything is a key in the dict passed to `Registry(settings)`. All are optional
 | `max_memory` | int MB ≥ 1 | `1024` | Checked against total system memory at construction. **Not yet enforced.** |
 | `keep_jobs` | bool | `False` | Keep finished jobs in the registry so you can read their result. When `False`, a job is dropped as soon as it is reaped. |
 | `terminate_behavior` | `"manual"` or `"on_idle"` | `"manual"` | When the registry stops supervising. See [Shutdown](#shutdown). |
-| `idle_time` | number ≥ 0 | `None` | Seconds of no active work before an `on_idle` registry shuts down. Required for `on_idle`, rejected for `manual`. |
+| `idle_time` | number ≥ 0 | `None` | Seconds of no active work before an `on_idle` registry shuts down. Required for `on_idle`, rejected for `manual`. NOTE: The addition of a new job in the registry resets this counter.|
 | `poll_interval` | number > 0 | `1.0` | How often the monitor thread sweeps for finished jobs. |
 | `shutdown_grace` | number ≥ 0 | `10` | Seconds between the terminate signal and the kill when bringing jobs down. |
 | `output_mode` | `"capture"`, `"file"` or `"discard"` | `"capture"` | Where a job's stdout/stderr goes. See [Output](#output). |
