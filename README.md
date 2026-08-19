@@ -50,13 +50,19 @@ python -m build
 pip install dist/carpenter-0.1.0-py3-none-any.whl
 ```
 
-To try the bundled demos without installing anything, clone the repo and run them from its root:
+To see it working before committing to anything, clone the repo and run the demo. It needs nothing installed and takes about fifteen seconds:
 
 ```bash
 git clone https://github.com/Power-Sh3ll/carpenter.git
 cd carpenter
-python feeder_test.py   # jobs arriving over time against a live registry
-python flood_test.py    # many jobs registered up front
+python examples/demo_scheduling.py
+```
+
+It walks through admission control, FIFO against LIFO, priority weights, aging, and what happens to a job whose command does not exist. To work on carpenter itself:
+
+```bash
+pip install -e ".[dev]"
+python -m pytest
 ```
 
 ## The classes
@@ -105,7 +111,7 @@ a723d7f4-8dc9-44cf-bbc9-4437b9e26ac2 job_0                failed     22.0s      
 
 Leaving the `with` block applies the shutdown policy rather than overriding it: under `on_idle` it waits out the registry's own idle window, under `manual` it drains the jobs and comes down. An exception skips both and tears everything down immediately.
 
-`python feeder_test.py` runs a fuller version of this. It drips new jobs into a live registry from a background thread to show that late arrivals reset the idle countdown, and redraws the table in place while it waits.
+Jobs can also arrive over time rather than all at once. A registry with `terminate_behavior: "on_idle"` treats a late arrival as a reset of its idle countdown, so a long-lived script can keep feeding work in from a background thread without the registry deciding it is finished in between.
 
 ## Limiting what runs at once
 
@@ -142,7 +148,127 @@ for job in reg.queued_jobs():
     reg.cancel_job(job)
 ```
 
-`python flood_test.py` demonstrates the whole thing: 32 jobs handed over at once against a registry that runs 8.
+Handing over far more work than the registry can run at once is the expected way to use this. Nothing is dropped, nothing needs retrying, and the registry meters it out as slots come free. `python examples/demo_scheduling.py` shows ten jobs going into a registry that runs three.
+
+## Choosing what runs next
+
+Once jobs are queuing, something has to decide which one goes first. Two settings control it, and they are independent, so all four pairings mean something.
+
+`dispatch_order` picks between a queue and a stack:
+
+```python
+{"dispatch_order": "fifo"}   # default. Longest waiting job starts next.
+{"dispatch_order": "lifo"}   # Most recently submitted job starts next and the prior is paused.
+```
+
+FIFO is what submitted work usually wants: results arrive in the order they were asked for. LIFO suits work whose newest request is its most relevant one, such as generating a thumbnail for whatever the user is looking at right now, where a backlog of older requests has usually been scrolled past.
+
+`priority_processing` decides whether weights are consulted at all:
+
+```python
+reg = Registry({"max_jobs": 1, "priority_processing": True}, blueprint)
+
+reg.submit_job(Job("nightly_report", priority=-10))
+reg.submit_job(Job("thumbnail", priority=0))
+reg.submit_job(Job("user_is_waiting", priority=100))
+
+[job.name for job in reg.queued_jobs()]
+# ['user_is_waiting', 'thumbnail', 'nightly_report']
+```
+
+Higher priority starts sooner, negative values sink below the default of zero, and `dispatch_order` breaks ties between equal weights. With `priority_processing` off, `job.priority` is ignored completely rather than quietly half working.
+
+A priority can be changed while a job is queued, and it takes effect on the next dispatch.
+
+**A weight decides which job starts, not which finishes.** A priority 100 job that runs for an hour still finishes after a priority 1 job submitted later that takes a second. Carpenter never interrupts a running job to make room for a more important one.
+
+`queued_jobs()` returns the waiting jobs in the order they will actually start, so it is the direct answer to "what is the registry going to do next".
+
+### Aging
+
+A LIFO queue under steady load never reaches its oldest job, and a steady stream of high priority work starves everything below it. Aging fixes both: a job that has been waiting gains priority.
+
+```python
+{"aging": True, "age_step": 30, "age_max": 4}
+```
+
+That reads as: every 30 seconds a job spends waiting, it gains one level of priority, up to 4 levels. A job's effective priority is therefore its own weight plus what it has earned by waiting, which you can read directly:
+
+```python
+reg.effective_priority(job)
+```
+
+Two things about this are deliberate.
+
+**The gain is in whole steps rather than climbing smoothly.** A boost that rose continuously would give the longest waiting job a strictly higher number at every instant, which orders the queue by age alone and quietly turns `lifo` into `fifo` the moment aging is switched on. Whole steps leave jobs inside the same step to be ordered by `dispatch_order` as normal, so LIFO keeps behaving like LIFO until something has genuinely waited too long.
+
+**`age_max` matters more than it looks.** Without a ceiling, a job that has waited long enough eventually outranks everything, including urgent work that has only just arrived, which trades a starvation problem for a priority inversion problem. The cap keeps aging as a fairness floor rather than a second scheduler.
+
+Aging works with `priority_processing` off as well as on. Starvation is a property of the LIFO ordering itself, not of using weights, so `{"dispatch_order": "lifo", "aging": True}` is a complete and sensible configuration on its own.
+
+## Lanes
+
+An application usually runs more than one kind of work, and one kind should not be able to crowd out another. A video editor generating thumbnails must never find that a burst of thumbnail requests has taken every slot away from a render the user is waiting on.
+
+Mounting one registry inside another gives each kind of work its own limit and its own ordering, under a shared ceiling:
+
+```python
+app = Registry({"max_jobs": 4, "keep_jobs": True}, default_blueprint=blueprint, name="app")
+
+thumbnails = app.mount(Registry({"max_jobs": 1, "dispatch_order": "lifo"}, name="thumbnails"))
+renders    = app.mount(Registry({"max_jobs": 3, "priority_processing": True}, name="renders"))
+
+thumbnails.submit_job(Job("thumb_0"))
+renders.submit_job(Job("render_0", priority=50))
+```
+
+The thumbnail lane runs newest first and never uses more than one slot. The render lane runs by weight and has three. Neither can reach the other's capacity, because capacity is partitioned rather than shared: the lane limits are checked at mount time to add up to no more than the parent's, so a lane that respects its own limit cannot push the tree past the ceiling.
+
+A registry holds jobs **or** other registries, never both. One holding jobs is a lane and does the supervising; one holding registries governs them. Submitting a job to a registry that holds lanes raises, and so does mounting a lane into one that holds jobs.
+
+### What a lane inherits
+
+A lane keeps every setting it named for itself and inherits the rest from the registry it is mounted in, including the default blueprint:
+
+```python
+thumbnails.max_jobs         # 1, its own
+thumbnails.dispatch_order   # "lifo", its own
+thumbnails.keep_jobs        # True, inherited from app
+```
+
+This is the reason `Settings` exists rather than a plain dict. A lane that says `keep_jobs=False` has expressed an opinion, and it has to survive a parent saying `True`. A dict cannot tell that apart from a lane that simply never mentioned the key, because both read the same way through `.get()`.
+
+A lane that names no `max_jobs` inherits its parent's, so it can claim the whole allowance and a second such lane will be refused.
+
+### One lifecycle
+
+This is what nesting buys that two separate registries cannot. The whole tree is driven by a single monitor thread belonging to the registry at the top, has one idle clock, and comes down with one call:
+
+```python
+app.shutdown()
+```
+
+Lanes are brought down before the registry governing them, so nothing is still spawning while its governor is being torn down. Each lane's own `on_shutdown` fires as it goes, and the top one's fires last.
+
+`print_registry()` on the tree prints one table per lane and a line for the whole thing, which is the single view across every lane that three separate registries could not give you.
+
+### Reading the tree
+
+Brackets read, methods write. Reading is cheap and pure, so it gets subscripting; mounting reserves capacity and validates against a ceiling, and unmounting sends signals and waits out a grace period, so those get verbs.
+
+```python
+app["renders"]                  # the lane
+app["renders"]["render_0"]      # a job in it
+"renders" in app
+len(app)                        # lanes, or jobs on a lane
+[lane.name for lane in app]     # iteration yields lanes, or jobs on a lane
+
+app.unmount("renders", grace=30)
+```
+
+`app[...]` raises `KeyError` when there is no match, which is the container contract. `get_job()` stays as the softer form that returns `None`, and searches every lane.
+
+There is no ordering between lanes. They hold separate capacity and do not compete, so `queued_jobs()` on the tree is each lane's queue concatenated, each in its own order.
 
 ## Job names
 
@@ -167,7 +293,7 @@ The name is not only a label. `get_job(name=...)` looks jobs up by it, and under
 
 ## Driving the loop yourself
 
-`wait_for_jobs()` blocks until everything has drained, which is all a one-shot script needs. When you want to watch progress as it happens, or do your own work between sweeps, you write the loop instead. This is the shape, from [flood_test.py](flood_test.py):
+`wait_for_jobs()` blocks until everything has drained, which is all a one-shot script needs. When you want to watch progress as it happens, or do your own work between sweeps, you write the loop instead. This is the shape:
 
 ```python
 with Registry(registry_settings, blueprint) as reg:
@@ -209,6 +335,11 @@ Registry({"max_jobs": 4, "keep_jobs": True})     # identical
 | Key | Type | Default | Meaning |
 | --- | --- | --- | --- |
 | `max_jobs` | int ≥ 1, or `None` | `None` | How many jobs may run at once. `None` means no limit, so everything starts on arrival. See [Limiting what runs at once](#limiting-what-runs-at-once). |
+| `dispatch_order` | `"fifo"` or `"lifo"` | `"fifo"` | Which queued job starts next, and the tie break between equal priorities. See [Choosing what runs next](#choosing-what-runs-next). |
+| `priority_processing` | bool | `False` | Whether `job.priority` is consulted when ranking the waiting list. Weights are ignored entirely when this is off. |
+| `aging` | bool | `False` | Whether a job that has been waiting gains priority, so a busy queue cannot strand it forever. |
+| `age_step` | number > 0 | `30.0` | Seconds a job must wait to gain one whole level of priority. Only read when `aging` is on. |
+| `age_max` | int ≥ 1, or `None` | `None` | Most levels a job can gain by waiting. `None` is unbounded. Only read when `aging` is on. |
 | `max_cpus` | int ≥ 1 | `1` | Checked against `os.cpu_count()` at construction. **Not yet enforced**  ...*see [Not implemented yet](#not-implemented-yet).* |
 | `max_memory` | int MB ≥ 1 | `1024` | Checked against total system memory at construction. **Not yet enforced.** |
 | `keep_jobs` | bool | `False` | Keep finished jobs in the registry so you can read their result. When `False`, a job is dropped as soon as it is reaped. |
@@ -318,16 +449,19 @@ Pass `on_shutdown=` to the constructor for a callback invoked as `on_shutdown(re
 
 `command` must be a non-empty list of strings. `spawn(stdout, stderr, stdin)` returns a fresh `subprocess.Popen` in text mode; the registry passes the stream targets matching its `output_mode`. If you call `spawn()` directly you are responsible for consuming anything you pipe; an unread pipe stalls the child once the OS buffer (~64KB) fills.
 
-### `Job(name, blueprint=None)`
+### `Job(name, blueprint=None, priority=0)`
 
-`name` must be a non-empty, lowercase, valid Python identifier under 256 characters. `blueprint` overrides the registry's `default_blueprint` for this job only; omit it to use the default.
+`name` must be a non-empty, lowercase, valid Python identifier under 256 characters. `blueprint` overrides the registry's `default_blueprint` for this job only; omit it to use the default. `priority` weights the job against everything else waiting, and is ignored unless the registry has `priority_processing` on.
 
 | Member | Description |
 | --- | --- |
 | `id` | UUID, assigned by `submit_job()`. `None` until then, and stable across re-runs. |
 | `status`, `exit_code`, `process` | Current state, result, and the underlying `Popen`. `process` is `None` while queued. |
 | `error` | The exception, if the spawn itself failed. `None` otherwise. |
+| `priority` | Ordering weight. Higher starts sooner. Settable while queued. |
 | `run` | How many times this job has been spawned. `0` until it first starts. |
+| `sequence` | Submission order token, assigned by the registry. This rather than a timestamp is what orders the waiting list, since two jobs submitted in the same instant would tie and the wall clock can be adjusted backwards. |
+| `queued_at` | `time.monotonic()` at submission, which is what aging measures against. `submit_time` is the wall-clock stamp for display; this one is for arithmetic. |
 | `submit_time`, `start_time`, `end_time` | Wall-clock `time.time()` stamps for being accepted, spawned, and finishing. |
 | `is_active()` / `is_running()` / `is_finished()` | Outstanding (queued, running or paused) / holding a slot (running or paused) / terminal. |
 | `duration()` | Seconds running so far, or total runtime once exited. `None` if never spawned, which includes a queued job. |
@@ -335,9 +469,9 @@ Pass `on_shutdown=` to the constructor for a callback invoked as `on_shutdown(re
 | `output()` | `(stdout, stderr)` snapshot, taken under the job's lock. |
 | `to_dict(include_output=False)` | JSON-serialisable view, for handing straight back out of a web framework. Output is opt-in because it can be large. |
 
-### `Registry(settings=None, default_blueprint=None, on_shutdown=None)`
+### `Registry(settings=None, default_blueprint=None, on_shutdown=None, name=None)`
 
-`settings` may be a `Settings`, a plain dict, or `None` for all defaults.
+`settings` may be a `Settings`, a plain dict, or `None` for all defaults. `name` is required before the registry can be mounted inside another, and follows the same rule as a job name.
 
 | Method | Description |
 | --- | --- |
@@ -349,7 +483,8 @@ Pass `on_shutdown=` to the constructor for a callback invoked as `on_shutdown(re
 | `poll_jobs()` | Sweep running jobs, finalise any that exited, start whatever the freed slots allow, and return the list that finished on this sweep. |
 | `active_jobs()` | Every job still outstanding: queued, running or paused. |
 | `running_jobs()` | Every job holding a slot, which includes paused ones. |
-| `queued_jobs()` | Every job waiting for a slot, in the order they will start. |
+| `queued_jobs()` | Every job waiting for a slot, in the order they will start. Ranked afresh on each call, so it reflects any aging that has happened since the last dispatch. |
+| `effective_priority(job)` | The priority the registry is currently ordering that job by: its own weight, if weights are on, plus anything gained by waiting. |
 | `available_slots()` | How many more jobs would start right now, or `None` when `max_jobs` is unset. |
 | `get_job(id=…)` / `get_job(name=…)` | Look up a job. Returns `None` if absent. |
 | `wait_for_jobs(timeout=None)` | Block until every outstanding job has exited, polling as it goes. Waits for the whole backlog, not just what is running. `True` if drained, `False` on timeout. |
@@ -359,7 +494,15 @@ Pass `on_shutdown=` to the constructor for a callback invoked as `on_shutdown(re
 | `is_shutdown` | Property. |
 | `uptime()` / `idle_seconds()` | Seconds since construction / seconds with no outstanding work. |
 | `should_terminate()` | Whether `terminate_behavior` says it is time to come down. |
-| `start_monitor()` | Start the monitor thread, which dispatches queued jobs and reaps finished ones. Idempotent; `submit_job()` calls it for you. |
+| `start_monitor()` | Start the monitor thread, which dispatches queued jobs and reaps finished ones. Idempotent; `submit_job()` calls it for you. On a mounted registry this passes upwards, since one thread drives the whole tree. |
+| `mount(child)` | Put a named registry inside this one and return it. Settles inheritance, checks capacity, and hands supervision to the root. The child must be empty. |
+| `unmount(name, grace=None)` | Take a mounted registry back out and return it, cancelling its queue and bringing down its running jobs first. |
+| `children()` / `leaves()` | The mounted registries / every registry in this subtree that holds jobs. |
+| `root()` / `parent` / `path()` | The registry at the top of the tree / the one this is mounted in / the dotted path from the root. |
+| `is_leaf` | Whether this registry holds jobs rather than other registries. |
+| `all_jobs()` | Every job here, or every job in the tree. |
+| `blueprint_for(job)` | The blueprint a job would actually run: its own, then this registry's default, then each parent's. |
+| `reg[name]`, `name in reg`, `len(reg)`, `iter(reg)` | Lanes, or jobs on a lane. `reg[name]` raises `KeyError`; `get_job()` returns `None`. |
 | `get_system_resources()` | `{cpu_count, memory (MB), has_gpu, gpu_type}`. |
 | `print_registry(clear=False)` | Pretty-print the job table. `clear=True` homes the cursor first so a polling loop redraws in place; ignored when stdout is not a TTY, to keep escape codes out of piped output. |
 
@@ -400,11 +543,12 @@ Carpenter is built for waiting lists in the tens to low hundreds. The registry s
 ## Not implemented yet
 
 - `max_cpus` and `max_memory` are validated against the host at construction but are **not enforced** at run time. Only `max_jobs` limits what actually runs. Enforcing the other two needs a per-job declaration of what each job costs, since the registry has no way to tell whether a given subprocess will use one core or twelve.
-- Job priority. The waiting list is strictly first in, first out; there is no way to say that one queued job matters more than another.
+- Preemption. A running job is never interrupted to make room for a higher priority one, so priority decides what starts next and nothing more.
+- Elastic capacity between lanes. A lane's limit is a fixed reservation, so an idle lane's slots cannot be lent to a busy sibling. Adding this later will not change what existing settings mean, since a lane that names no floor keeps its ceiling as one.
+- A lane with `terminate_behavior: "on_idle"` of its own. Lanes follow the tree's lifecycle, because `shutdown()` is permanent and a lane that idled out would be dead for the life of the process.
 - Not on PyPI. It is pip installable from GitHub or a local clone, but the distribution name is not settled yet. See [Install](#install).
 - Exposing log file naming to the user in `file` mode, so they can choose a directory and filename pattern rather than the current `<name>.<id>.<run>.<stream>.log`.
 - max job age and max job runtime, so the registry can automatically drop old or long-running jobs. This will be a per-job setting, with a default in the registry settings.
-- Nested registries, so one application can give different kinds of work their own limits and their own ordering under a shared ceiling.
 
 ## Tests
 
