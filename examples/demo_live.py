@@ -3,7 +3,7 @@ A two minute live view of a registry tree under load, redrawn in place.
 
     python examples/demo_live.py
 
-Best watched in a terminal at least 40 rows tall. Piping it somewhere prints a
+Best watched in a terminal at least 25 rows tall. Piping it somewhere prints a
 frame every few seconds instead of redrawing, so the run still reads as a log.
 
 The scenario is a video editor. Three kinds of work share one machine and must
@@ -110,10 +110,11 @@ PHASES = [
         "starts. LIFO still orders everything that has not waited that long.",
     ]),
     (95, "When the work itself goes wrong", [
-        "One job is given a command that does not exist, another exits non-zero.",
-        "WATCH: both go red and nothing else is disturbed. The registry spawns on",
-        "its own thread, so a bad command fails its own job rather than taking",
-        "the monitor down with it.",
+        "One export is given a command that does not exist, another exits",
+        "non-zero. Both land in the export lane.",
+        "WATCH: the failed line below, and that nothing else is disturbed. The",
+        "registry spawns on its own thread, so a bad command fails its own job",
+        "rather than taking the monitor down with every other job on it.",
     ]),
     (112, "Coming down", [
         "One shutdown for the whole tree. Lanes are brought down before the",
@@ -265,8 +266,21 @@ def draw(elapsed):
     for lane in app:
         print(lane_row(lane))
     print("  " + "-" * 84)
-    print("  " + " | ".join(app._summary_parts(app.all_jobs())))
+    jobs = app.all_jobs()
+    done = sum(1 for job in jobs if job.is_finished())
+    print(f"  {len(jobs)} jobs across {len(app)} lanes | "
+          f"{len(app.running_jobs())}/{app.max_jobs} running | "
+          f"{len(app.queued_jobs())} queued | {done} finished | "
+          f"free slots {app.available_slots()}")
     print("  ! carries a priority weight    * has been promoted by waiting")
+
+    failed = [job for job in jobs if job.status == "failed"]
+    if failed:
+        detail = ", ".join(
+            f"{job.name} ({type(job.error).__name__ if job.error else 'exit ' + str(job.exit_code)})"
+            for job in failed[-3:]
+        )
+        print(f"  failed: {detail}")
 
     stale = oldest_queued(thumbnails)
     if stale is not None:
@@ -310,15 +324,29 @@ def main():
     draw(time.monotonic() - started)
 
     print()
-    print("=" * 90)
+    print("=" * 88)
+    print("  The registry's own view of the tree, one table per lane.")
+    print("=" * 88)
+    app.print_registry(max_print_jobs=4)
+
+    jobs = app.all_jobs()
+    cancelled = [job for job in jobs if job.status == "cancelled"]
+    finished = [job for job in jobs if job.status == "finished"]
+    failed = [job for job in jobs if job.status == "failed"]
+
+    print()
+    print("=" * 88)
     print(f"  Shut down in one call. Lanes first: {' then '.join(order)}")
-    print(f"  {queued_before} job(s) were still queued and were cancelled rather than run.")
-    cancelled = [job for job in app.all_jobs() if job.status == "cancelled"]
-    finished = [job for job in app.all_jobs() if job.status == "finished"]
-    failed = [job for job in app.all_jobs() if job.status == "failed"]
+    print(f"  {queued_before} job(s) were still queued, and were cancelled rather than run.")
     print(f"  finished {len(finished)} | failed {len(failed)} | cancelled {len(cancelled)} "
-          f"| total {len(app.all_jobs())}")
-    print("=" * 90)
+          f"| total {len(jobs)}")
+    if failed:
+        print()
+        for job in failed:
+            reason = type(job.error).__name__ if job.error else f"exit code {job.exit_code}"
+            print(f"  {job.name:<16} failed: {reason}")
+        print("  A command that does not exist fails its own job and leaves the rest alone.")
+    print("=" * 88)
 
 
 if __name__ == "__main__":

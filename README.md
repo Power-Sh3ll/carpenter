@@ -58,7 +58,11 @@ cd carpenter
 python examples/demo_scheduling.py
 ```
 
-It walks through admission control, FIFO against LIFO, priority weights, aging, and what happens to a job whose command does not exist. To work on carpenter itself:
+It walks through admission control, FIFO against LIFO, priority weights, aging, and what happens to a job whose command does not exist.
+
+For something to watch rather than read, `python examples/demo_live.py` runs a registry tree under load for two minutes and redraws in place: three lanes with different limits and different ordering, work arriving on a background thread, and a narrated phase for each behaviour as it happens.
+
+To work on carpenter itself:
 
 ```bash
 pip install -e ".[dev]"
