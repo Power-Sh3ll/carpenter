@@ -76,6 +76,8 @@ python -m pytest
 
 ## Quick start
 
+*See [Driving the Loop yourself](#driving-the-loop-yourself) for a more interactive example.*
+
 ```python
 from carpenter import Blueprint, Job, Registry
 
@@ -296,17 +298,48 @@ The name is not only a label. `get_job(name=...)` looks jobs up by it, and under
 `wait_for_jobs()` blocks until everything has drained, which is all a one-shot script needs. When you want to watch progress as it happens, or do your own work between sweeps, you write the loop instead. This is the shape:
 
 ```python
-with Registry(registry_settings, blueprint) as reg:
-    for x in range(32):
-        reg.submit_job(Job(f"job_{x}"))
+import time
+from carpenter import Blueprint, Job, Registry
 
-    while not reg.is_shutdown:
+settings = {
+    "terminate_behavior": "on_idle",   # come down once nothing is running
+    "idle_time": 0,                    # immediately after the last job finishes
+    "keep_jobs": True,                 # keep finished jobs around to inspect
+}
+
+script = """
+import random
+import time
+sleep_time = random.randint(1, 5)
+
+for x in range(1, 6):
+    print(f"Job {x} is running...")
+    time.sleep(sleep_time)
+    print(f"Job {x} completed after {sleep_time} seconds.")
+"""
+
+# Meanings:
+# python: the interpreter to use for executing the script
+# -u    : unbuffered output
+# -c    : run the script passed as a string
+# script: the script to execute
+# task.py: an alternative to using the script string, you can also point to a file
+
+blueprint = Blueprint(["python", "-u", "-c", script]) 
+# blueprint = Blueprint(["python", "-u", "task.py"]) # alternative to using the script string, you can also point to a file
+
+with Registry(settings, default_blueprint=blueprint) as reg:
+    # Create 3 jobs with the default blueprint and submit them to the registry
+    for i in range(3):
+        reg.submit_job(Job(f"job_{i}"))
+
+    while not reg.is_shutdown: # only use this if you want to loop the print until the registry is shutdown
         reg.poll_jobs()
-        active = reg.active_jobs()
+        active = reg.active_jobs() # returns True if any jobs are still running
         reg.print_registry(clear=True)
         if not active and reg.terminate_behavior == "manual":
             break
-        time.sleep(max(1.0, reg.poll_interval))
+        time.sleep(max(1, reg.poll_interval)) # poll interval present to avoid busy waiting, but also ensure that the loop doesn't run too frequently 
 ```
 
 Four things in there are worth spelling out, because none of them are guessable.
