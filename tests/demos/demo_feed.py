@@ -34,7 +34,7 @@ ARRIVALS = [
     (30, "late_job_2", None),
     (60, "super_late_job_3", None),
     (60, "self_terminated_job", 5),
-    (120, "super_duper_late_job_4", None),
+    (120, "super_duper_late_job_4", None), # This one is intended to be rejected because it arrives after the registry has shut down.
 ]
 
 
@@ -61,9 +61,8 @@ def feed_jobs(reg, arrivals, rejected):
         time.sleep(max(0.0, start + delay - time.monotonic()))
 
         job = Job(name)
-        reg.register_job(job)
         try:
-            reg.start_job(job)
+            reg.submit_job(job)
         except RuntimeError:
             # The idle window elapsed and the registry shut down before this one
             # arrived. That is the outcome super_duper_late_job_4 exists to show,
@@ -82,10 +81,7 @@ def feed_jobs(reg, arrivals, rejected):
 # for the registry's own idle window to elapse before tearing it down.
 with Registry(registry_settings, default_blueprint=blueprint) as reg:
     for x in range(1):
-        job_name = f"job_{x}"
-        new_job = Job(job_name)
-        reg.register_job(new_job)
-        reg.start_job(new_job)
+        reg.submit_job(Job(f"job_{x}"))
 
     rejected = []
     feeder = threading.Thread(target=feed_jobs, args=(reg, ARRIVALS, rejected), daemon=True)
@@ -119,8 +115,9 @@ if feeder.is_alive():
 feeder.join()
 
 # The live view above wipes the screen on every redraw, so this is the copy that
-# survives. A rejected job still shows as "initialized": register_job() takes it,
-# and only start_job() checks whether the registry is still up.
+# survives. A rejected job does not appear in it at all: submit_job() checks
+# whether the registry is still up before accepting anything, so a job it turns
+# away was never registered and is still "initialized", belonging to nobody.
 reg.print_registry()
 if rejected:
     print(f"Refused after shutdown: {', '.join(rejected)}")
