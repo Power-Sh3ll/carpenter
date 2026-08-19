@@ -1,5 +1,12 @@
-from carpenter import Registry, Job, Blueprint
+import os
+import sys
 import time
+
+# So the demo runs from a clone without carpenter being installed first.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from carpenter import Registry, Job, Blueprint  # noqa: E402
 
 registry_settings = {
     "max_cpus": 4,
@@ -16,7 +23,10 @@ registry_settings = {
     "idle_time": 20,
 }
 
-blueprint = Blueprint(["python", "-u", "task.py"])
+# sys.executable rather than "python", so the demo runs under whichever
+# interpreter started it, and an absolute path so it does not depend on the
+# directory it was launched from.
+blueprint = Blueprint([sys.executable, "-u", os.path.join(ROOT, "task.py")])
 
 with Registry(registry_settings, blueprint) as reg:
     # All 32 are handed over up front. submit_job() accepts every one of them

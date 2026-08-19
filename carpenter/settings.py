@@ -17,6 +17,14 @@ TERMINATE_BEHAVIORS = ("manual", "on_idle")
 #   "discard" - sent to os.devnull.
 OUTPUT_MODES = ("capture", "file", "discard")
 
+# Which queued job the registry starts next, and the tie break between jobs of
+# equal priority when priority_processing is on.
+#   "fifo" - a queue. The job that has been waiting longest starts next.
+#   "lifo" - a stack. The most recently submitted job starts next, which suits
+#            work whose newest request is its most relevant one. Pair it with
+#            aging, or the oldest job in a busy queue is never reached.
+DISPATCH_ORDERS = ("fifo", "lifo")
+
 
 class _Unset:
     """
@@ -54,6 +62,11 @@ DEFAULTS = {
     "max_jobs": None,
     "max_cpus": 1,
     "max_memory": 1024,
+    "dispatch_order": "fifo",
+    "priority_processing": False,
+    "aging": False,
+    "age_step": 30.0,
+    "age_max": None,
     "keep_jobs": False,
     "terminate_behavior": "manual",
     "idle_time": None,
@@ -86,6 +99,11 @@ class Settings:
     max_jobs: Any = UNSET
     max_cpus: Any = UNSET
     max_memory: Any = UNSET
+    dispatch_order: Any = UNSET
+    priority_processing: Any = UNSET
+    aging: Any = UNSET
+    age_step: Any = UNSET
+    age_max: Any = UNSET
     keep_jobs: Any = UNSET
     terminate_behavior: Any = UNSET
     idle_time: Any = UNSET
@@ -170,6 +188,18 @@ class Settings:
                 raise ValueError("max_jobs must be a positive integer or None for unlimited")
         if not isinstance(self.max_cpus, int) or isinstance(self.max_cpus, bool) or self.max_cpus < 1:
             raise ValueError("max_cpus must be a positive integer")
+        if self.dispatch_order not in DISPATCH_ORDERS:
+            raise ValueError(f"dispatch_order must be one of {DISPATCH_ORDERS}")
+        if not isinstance(self.priority_processing, bool):
+            raise ValueError("priority_processing must be a boolean")
+        if not isinstance(self.aging, bool):
+            raise ValueError("aging must be a boolean")
+        if not isinstance(self.age_step, (int, float)) or isinstance(self.age_step, bool) or self.age_step <= 0:
+            raise ValueError("age_step must be a positive number of seconds")
+        if self.age_max is not None:
+            if not isinstance(self.age_max, int) or isinstance(self.age_max, bool) or self.age_max < 1:
+                raise ValueError("age_max must be a positive integer number of priority levels, or None for unbounded")
+
         if not isinstance(self.keep_jobs, bool):
             raise ValueError("keep_jobs must be a boolean")
         if not isinstance(self.max_memory, int) or isinstance(self.max_memory, bool) or self.max_memory < 1:

@@ -13,11 +13,16 @@ TERMINAL_STATUSES = ("finished", "failed", "stopped", "terminated", "cancelled")
 
 
 class Job:
-    def __init__(self, name, blueprint=None) -> None:
+    def __init__(self, name, blueprint=None, priority=0) -> None:
         """
         Create a job with the given name. If blueprint is omitted, the job runs
         whatever default_blueprint the registry it's submitted to provides;
         passing one here overrides that default for this job only.
+
+        priority weights the job against everything else waiting: higher starts
+        sooner. It is ignored entirely unless the registry has
+        priority_processing switched on, and it can be changed while the job is
+        queued, which takes effect on the next dispatch.
 
         A freshly created job is "initialized", which means it belongs to nobody
         yet. Handing it to a registry with submit_job() is what makes it the
@@ -27,6 +32,7 @@ class Job:
         self.id = None
         self.name = name
         self.blueprint = blueprint
+        self.priority = priority
         self.status = "initialized"
         self.process = None
         self.start_time = None
@@ -35,6 +41,18 @@ class Job:
         # waiting for a free slot is visible separately from the time it spends
         # running.
         self.submit_time = None
+
+        # Assigned by the registry on every submission, counting up. This is
+        # what orders the waiting list rather than submit_time: two jobs handed
+        # over in the same instant would tie on a timestamp, and the wall clock
+        # can be adjusted backwards underneath a comparison.
+        self.sequence = None
+
+        # time.monotonic() at submission, which is what aging measures against.
+        # submit_time is the wall clock stamp for display and serialisation;
+        # this one is for arithmetic, because a duration taken from a clock that
+        # can jump is not a duration.
+        self.queued_at = None
 
         # How many times this job has been spawned. A Job object can be
         # resubmitted after it reaches a terminal status, and this is what keeps
@@ -73,6 +91,8 @@ class Job:
             raise ValueError("name must be lowercase")
         if blueprint is not None and not isinstance(blueprint, Blueprint):
             raise ValueError("blueprint must be a Blueprint instance or None")
+        if not isinstance(priority, (int, float)) or isinstance(priority, bool):
+            raise ValueError("priority must be a number")
 
     def is_active(self) -> bool:
         """
@@ -156,6 +176,7 @@ class Job:
             "name": self.name,
             "status": self.status,
             "pid": self.process.pid if self.process is not None else None,
+            "priority": self.priority,
             "run": self.run,
             "exit_code": self.exit_code,
             "error": str(self.error) if self.error is not None else None,

@@ -1,7 +1,13 @@
+import os
+import sys
 import threading
 import time
 
-from carpenter import Blueprint, Job, Registry
+# So the demo runs from a clone without carpenter being installed first.
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from carpenter import Blueprint, Job, Registry  # noqa: E402
 
 registry_settings = {
     "max_cpus": 4,
@@ -13,7 +19,10 @@ registry_settings = {
     "idle_time": 20,
 }
 
-blueprint = Blueprint(["python", "-u", "task.py"])  # -u added here
+# sys.executable rather than "python", so the demo runs under whichever
+# interpreter started it, and an absolute path so it does not depend on the
+# directory it was launched from. -u keeps the child's output unbuffered.
+blueprint = Blueprint([sys.executable, "-u", os.path.join(ROOT, "task.py")])
 
 # Jobs that turn up after the registry is already running, as (seconds from
 # start, name, seconds to run before we kill it). This stands in for a web
